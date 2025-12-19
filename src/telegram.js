@@ -2,7 +2,8 @@ const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { processAndPostVideo } = require('./videoProcessor');
+// We remove the top-level require here to fix the circular dependency warning
+// const { processAndPostVideo } = require('./videoProcessor');
 
 const TELEGRAM_API = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}`;
 
@@ -20,22 +21,41 @@ async function setupWebhook() {
 
 // Main handler for incoming updates
 async function handleTelegramUpdate(update) {
-  // Check if message contains a video
-  if (!update.message || !update.message.video) {
+  const message = update.message;
+  
+  if (!message) return;
+
+  const chatId = message.chat.id;
+
+  // 1. Handle /start command (Welcome Message)
+  if (message.text && message.text.startsWith('/start')) {
+    const welcomeText = `👋 **Welcome to your Facebook Auto-Poster!**\n\nI can help you upload your music videos directly to your Facebook Page.\n\n**How to use:**\n1. Click the 📎 (Paperclip) icon below.\n2. Select your video file.\n3. Add a caption (optional).\n4. Send it! 🚀\n\nI'll handle the rest.`;
+    await sendMessage(chatId, welcomeText);
+    return;
+  }
+
+  // 2. Check if message contains a video
+  if (!message.video) {
+    // If it's just text (and not /start), remind them to send a video
+    if (message.text) {
+        await sendMessage(chatId, "Please send me a **video file** to upload. 🎥");
+    }
     return; // Ignore non-video messages
   }
 
-  const chatId = update.message.chat.id;
-  const videoData = update.message.video;
+  // Lazy load the processor here to ensure it is fully loaded and avoid circular dependency issues
+  const { processAndPostVideo } = require('./videoProcessor');
+
+  const videoData = message.video;
   const fileId = videoData.file_id;
   
   // Use the caption from Telegram, or a default date string if none provided
-  const caption = update.message.caption || `Video uploaded via Telegram on ${new Date().toLocaleDateString()}`;
+  const caption = message.caption || `Video uploaded via Telegram on ${new Date().toLocaleDateString()}`;
 
   console.log(`Received video from Chat ID ${chatId}. Processing...`);
 
   // Notify user processing started
-  await sendMessage(chatId, "Video received! 🎥 Uploading to Facebook...");
+  await sendMessage(chatId, "📥 **Video Received!**\n\nI'm working on uploading it to Facebook right now. This might take a moment... ⏳");
 
   try {
     // 1. Get File Path from Telegram API
@@ -50,14 +70,14 @@ async function handleTelegramUpdate(update) {
     // 3. Hand off to Processor (Direct Upload)
     await processAndPostVideo(localFilePath, caption);
 
-    await sendMessage(chatId, "✅ Done! Video posted to your Facebook Page.");
+    await sendMessage(chatId, "✅ **Success!**\n\nYour video has been posted to your Facebook Page. 🎉");
     
     // Cleanup input file to save space
     if (fs.existsSync(localFilePath)) fs.unlinkSync(localFilePath);
 
   } catch (error) {
     console.error('Error in telegram handler:', error);
-    await sendMessage(chatId, "❌ An error occurred while uploading your video.");
+    await sendMessage(chatId, "❌ **Error**\n\nSomething went wrong while uploading your video. Please try again.");
   }
 }
 
@@ -83,7 +103,8 @@ async function sendMessage(chatId, text) {
   try {
     await axios.post(`${TELEGRAM_API}/sendMessage`, {
       chat_id: chatId,
-      text: text
+      text: text,
+      parse_mode: 'Markdown' // Added Markdown support for bold text
     });
   } catch (e) {
     console.error('Failed to send message:', e.message);
